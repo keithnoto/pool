@@ -1,86 +1,41 @@
-const char SYNOPSIS[] = "example multi-threaded program that uses pool"; 
-const char VERSION[] = "1";
+// SYNOPSIS "example multi-threaded program that uses pool"
+// VERSION  "1"
 
 #include <sys/timeb.h>
 #include <iostream>
 #include "pool.h"
-using namespace noto;
-
-// get wall clock time now
-inline double now() { struct timeb tp; ftime(&tp); return tp.time + 1e-3 * tp.millitm; }
-
-// adderpool will call finish() after `groups' calls to groupinc
-class adderpool_t : public pool_t {
-  private:
-  	const int groups;
-	int incs = 0;
-  public: 
-  	adderpool_t(int threadcount, int g) : pool_t(threadcount),groups(g) { }
-	void groupinc() { 
-		incs++; 
-		if (incs >= groups) { 
-			this->finish(); 
-		} 
-	}
-};
-
-// delete dynamically allocated data
-void delete_worker( worker_t *worker ) {
-	delete worker;
-}
 
 // a worker that factors a number for primality in the stupidest possible way
-class primer_t : public worker_t {
+class primer_t : public noto::worker_t {
   private:
-  	bool prime = true;  // set to false if I find out the number isn't prime
-	double t0,t1; // start,end wall clock time
+  	bool prime; // set this during run()
   public:
 	const unsigned long int n; // number to test for primality
-	primer_t(unsigned long int an) : n(an) { priority = an; }
+	primer_t(unsigned long int an) : n(an) { this->priority = an; }
 	void run(); // compute if n is prime
 	void finalize(); // print the answer
 };
 
+// get wall clock time now
+inline double now() { struct timeb tp; ftime(&tp); return tp.time + 1e-3 * tp.millitm; }
 
-void primer_t::run() { 
+// compute if this->n is prime, store result in this->prime bool
+void primer_t::run() {
 
-	this->t0 = now();
+	this->prime = true;
 	for (unsigned long int d=2; d<n; d++) { 
 		if ( n % d == 0 ) { 
 			this->prime = false;
 		} 
 	}
-	this->t1 = now();
 
 }
 
+// print result to screen
 void primer_t::finalize() { 
-	
-	std::cout << n << " is " << (prime?"":"not ") << "prime (" << (t1-t0) << " seconds)" << std::endl;
-
-}
-
-// adder worker takes a range of numbers and adds primality test workers for
-// each to its thread pool
-class adder_t : public worker_t { 
-  private:
-  	adderpool_t *pool;
-  	const unsigned long int min;
-  	const unsigned long int max;
-  public:
-	adder_t(adderpool_t *p, unsigned long int a, unsigned long int b) : pool(p),min(a),max(b) { priority = 0; }
-	void run(); // add workers
-	void finalize(); // call groupinc
-}; 
-
-void adder_t::run() { 
-	for (unsigned long int n=min; n<=max; n++) { 
-		this->pool->add( new primer_t( n ) ); 
+	if (this->prime) { 
+		std::cout << n << " is prime" << std::endl;
 	}
-}
-
-void adder_t::finalize() { 
-	this->pool->groupinc(); 
 }
 
 int main( int argc, const char **argv ) {
@@ -90,32 +45,27 @@ int main( int argc, const char **argv ) {
 		return 1;
 	}
 
-	const size_t threadcount = (size_t)(atoi(argv[1]));
+	const size_t threadcount = (size_t)(atoi(argv[1])); 
 
-	std::cout << "create thread pool size " << threadcount << " ..." << std::endl;
-	adderpool_t pool(threadcount, 5); // there will be 5 adder_t 
+	const double start_time = now();
 
-	std::cout << "add some work ..." << std::endl;
+	noto::pool_t pool( threadcount );  // create pool
 
-	// add the 5 adder_t
-	pool.add(new adder_t(&pool, 100000001,100000100)); 
-	pool.add(new adder_t(&pool, 2,100)); 
-	pool.add(new adder_t(&pool, 10000001,10000100)); 
-	pool.add(new adder_t(&pool, 1000001,1000100)); 
-	pool.add(new adder_t(&pool, 100001,100100)); 
+	std::thread *asynchronous_pool_start_thread = pool.start_asynchronously(noto::delete_worker); // tell pool to delete each worker after it completes
 
-	std::cout << "execute!" << std::endl;
+	// add some work, these will start immediately
+	for (size_t n=100000001; n<=100000101; n++) { pool.add(new primer_t(n)); }
+	for (size_t n=2; n<=100; n++) { pool.add(new primer_t(n)); }
+	for (size_t n=10000001; n<=10000101; n++) { pool.add(new primer_t(n)); }
+	for (size_t n=1000001; n<=1000101; n++) { pool.add(new primer_t(n)); }
+	for (size_t n=100001; n<=100101; n++) { pool.add(new primer_t(n)); }
 
-	// start running the adder_t workers, which will add other prime_t workers
-	// to the pool.  once the 5th adder_t is done, the pool will finish() and
-	// start() will return control to this function when all the prime_t
-	// workers are done.
+	pool.finish(); // no more workers will be added, pool knows to stop when last thread finishes
+	asynchronous_pool_start_thread->join(); // wait for that...
 	
-	pool.start(delete_worker);  
+	const double end_time = now();
 
-	// ... and they're done 
-
-	std::cout << "all done!" << std::endl;
+	std::cout << "all done, " << (end_time - start_time) << " seconds" << std::endl;
 
 	return 0; 
 
